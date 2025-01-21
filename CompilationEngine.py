@@ -1,4 +1,5 @@
 import typing
+
 import JackTokenizer
 from SymbolTable import SymbolTable
 from VMWriter import VMWriter
@@ -8,7 +9,7 @@ OP = ['+', '-', '*', '/', '&', '|', '<', '>', '=']
 OP_VM = {'+': "add", '-': "sub", "&amp;": "and", '|': "or",
          "&lt;": "lt", "&gt;": "gt", '=': "eq"}
 
-UNARY_OP = {'~': "not", '-': "neg"}
+UNARY_OP = {'~': "not", '-': "neg", '#': "shiftright", '^': "shiftleft"}
 
 KIND = {
     "static": "static",
@@ -16,12 +17,13 @@ KIND = {
     "arg": "argument",
     "var": "local"}
 
+
 class CompilationEngine:
 
     def __init__(self, input_stream: "JackTokenizer", output_stream: typing.TextIO) -> None:
         """
-        Creates a new compilation engine with the given input and output.
-        The next routine called must be compileClass()
+        Creates a new compilation engine with the given input and output. The
+        next routine called must be compileClass()
         """
         self.curr_subroutine_type = None
         self.subroutine_name = None
@@ -29,7 +31,8 @@ class CompilationEngine:
         self.jack_tokenizer = input_stream
         self.vm_writer = VMWriter(output_stream)
         self.symbol_table = SymbolTable()
-        self.label_counter = 0
+        self.label_if_counter = 0
+        self.label_while_counter = 0
         self.class_name = ""
 
     def compile_class(self) -> None:
@@ -67,37 +70,36 @@ class CompilationEngine:
         self.jack_tokenizer.advance()
 
     def compile_subroutine(self):
-        """Compiles a complete method, function, or constructor."""
+        """Compiles a function name."""
         self.symbol_table.start_subroutine()
         self.curr_subroutine_type = self.jack_tokenizer.keyword()
         self.jack_tokenizer.advance()
         self.jack_tokenizer.advance()
         self.subroutine_name = self.class_name + "." + self.jack_tokenizer.get_token()
         self.jack_tokenizer.advance()
-        #if subroutine_type == "METHOD":
-            #self.symbol_table.define("this", "", "ARG")
-            #self.jack_tokenizer.advance()
-
         self.compile_parameter_list()
         self.jack_tokenizer.advance()
         while self.jack_tokenizer.keyword() == "VAR":
             self.compile_class_var_dec()
-        self.vm_writer.write_function(self.subroutine_name, self.symbol_table.get_local_variable_count())  # function xxx.yyy n
+
+        self.vm_writer.write_function(self.subroutine_name, self.symbol_table.get_local_variable_count())
+
         if self.curr_subroutine_type == "METHOD":
             self.vm_writer.write_push("argument", 0)
             self.vm_writer.write_pop("pointer", 0)
+
         if self.curr_subroutine_type == "CONSTRUCTOR":
             self.vm_writer.write_push("constant", self.symbol_table.get_field_variable_count())
             self.vm_writer.write_call("Memory.alloc", 1)
             self.vm_writer.write_pop("pointer", 0)
+
         while self.jack_tokenizer.get_token() != '}':
             self.compile_statements()
+
         self.jack_tokenizer.advance()
 
     def compile_parameter_list(self) -> None:
-        """
-        Compiles a (possibly empty) parameter list. Does not handle the enclosing parentheses tokens ( and ).
-        """
+        """Compiles a (possibly empty) parameter list. Does not handle the enclosing parentheses tokens ( and )."""
         if self.curr_subroutine_type == "METHOD":
             self.symbol_table.define("this", "Array", "ARG")
         self.jack_tokenizer.advance()
@@ -111,10 +113,12 @@ class CompilationEngine:
                 self.jack_tokenizer.advance()
         self.jack_tokenizer.advance()
 
+    def compile_var_dec(self) -> None:
+        """Compiles a var declaration."""
+        pass
+
     def compile_statements(self):
-        """
-        Compiles a sequence of statements. Does not handle the enclosing curly bracket tokens { and }.
-        """
+        """Compiles a sequence of statements. Does not handle the enclosing curly bracket tokens { and }."""
         while True:
             token_type = self.jack_tokenizer.token_type()
             if self.jack_tokenizer.get_token() == '}':
@@ -143,13 +147,8 @@ class CompilationEngine:
         self.vm_writer.write_return()
         self.jack_tokenizer.advance()
 
-    def compile_var_dec(self) -> None:
-        """Compiles a var declaration."""
-        pass
-
     def compile_let(self) -> None:
         """Compiles a let statement."""
-        # WE SKIP THE "LET" KEYWORD
         self.jack_tokenizer.advance()
         var_name = self.jack_tokenizer.get_token()
         self.jack_tokenizer.advance()
@@ -182,47 +181,48 @@ class CompilationEngine:
 
     def compile_while(self) -> None:
         """Compiles a while statement."""
-        self.label_counter += 1
-        self.vm_writer.write_label("L" + str(self.label_counter))
+        self.label_while_counter += 1
+        self.vm_writer.write_label("L" + str(self.label_while_counter))
         self.jack_tokenizer.advance()
         self.compile_expression()
-        self.vm_writer.write_arithmetic("not")  # not
-        self.vm_writer.write_if("L" + str(self.label_counter + 1))
+        self.vm_writer.write_arithmetic("not")
+        self.vm_writer.write_if("L" + str(self.label_while_counter + 1))
         self.jack_tokenizer.advance()
         self.compile_statements()
-        self.vm_writer.write_goto("L" + str(self.label_counter))
-        self.label_counter += 1
-        self.vm_writer.write_label("L" + str(self.label_counter))
+        self.vm_writer.write_goto("L" + str(self.label_while_counter))
+        self.label_while_counter += 1
+        self.vm_writer.write_label("L" + str(self.label_while_counter))
         self.jack_tokenizer.advance()
 
     def compile_if(self) -> None:
-        """Compiles a if statement, possibly with a trailing else clause."""
+        """Compiles an if statement, possibly with a trailing else clause."""
         self.jack_tokenizer.advance()
         self.compile_expression()
-        self.label_counter += 1
-        l_true = 'TrueIf' + str(self.label_counter)
-        l_false = 'FalseIf' + str(self.label_counter)
-        l_end = 'EndIf' + str(self.label_counter)
-        self.vm_writer.write_if(l_true)
-        self.vm_writer.write_goto(l_false)
-        self.vm_writer.write_label(l_true)
+        self.label_if_counter += 1
+        label_true = 'TrueIf' + str(self.label_if_counter)
+        label_false = 'FalseIf' + str(self.label_if_counter)
+        label_end = 'EndIf' + str(self.label_if_counter)
+        self.vm_writer.write_if(label_true)
+        self.vm_writer.write_goto(label_false)
+        self.vm_writer.write_label(label_true)
         self.jack_tokenizer.advance()
         self.compile_statements()
-        self.vm_writer.write_goto(l_end)
+        self.vm_writer.write_goto(label_end)
         self.jack_tokenizer.advance()
-        self.vm_writer.write_label(l_false)
+        self.vm_writer.write_label(label_false)
         if self.jack_tokenizer.get_token().lower() == 'else':
             self.jack_tokenizer.advance()
             self.jack_tokenizer.advance()
             self.compile_statements()
             self.jack_tokenizer.advance()
-        self.vm_writer.write_label(l_end)
+        self.vm_writer.write_label(label_end)
 
     def compile_expression(self) -> None:
         """Compiles an expression."""
         self.compile_term()
         while self.jack_tokenizer.get_token() in OP:
             op = self.jack_tokenizer.symbol()
+
             self.jack_tokenizer.advance()
             self.compile_term()
             match op:
@@ -246,7 +246,7 @@ class CompilationEngine:
             cur_symbol = self.jack_tokenizer.symbol()
             self.expression_or_unary(cur_symbol)
         else:
-            identifier = self.jack_tokenizer.identifier()  # get current identifier
+            identifier = self.jack_tokenizer.identifier()
             self.jack_tokenizer.advance()
             current_token = self.jack_tokenizer.get_token()
             match current_token:
@@ -261,11 +261,10 @@ class CompilationEngine:
     def expression_or_unary(self, cur_symbol):
         match cur_symbol:
             case "(":
-                self.jack_tokenizer.advance()  # (
+                self.jack_tokenizer.advance()
                 self.compile_expression()
-                self.jack_tokenizer.advance()  # )
-
-            case "-" | "~":
+                self.jack_tokenizer.advance()
+            case "-" | "~" | "#" | "^":
                 self.jack_tokenizer.advance()
                 self.compile_term()
                 self.vm_writer.write_arithmetic(UNARY_OP[cur_symbol])
@@ -308,28 +307,27 @@ class CompilationEngine:
         self.vm_writer.write_push(KIND[kind.lower()], index)
 
     def call_subroutine(self, current_token, identifier):
-        n_args = 0
+        num_args = 0
         if current_token == "(":
-            function_name = self.class_name + "." + identifier
-            n_args += 1
+            func_name = self.class_name + "." + identifier
+            num_args += 1
             self.vm_writer.write_push("pointer", 0)
         else:
             self.jack_tokenizer.advance()
             identifier2 = self.jack_tokenizer.identifier()
             kind = self.symbol_table.kind_of(identifier)
             if kind is None:
-                function_name = identifier + "." + identifier2
+                func_name = identifier + "." + identifier2
             else:
-                function_name = self.symbol_table.type_of(identifier) + "." + identifier2
+                func_name = self.symbol_table.type_of(identifier) + "." + identifier2
                 index = self.symbol_table.index_of(identifier)
                 self.vm_writer.write_push(KIND[kind.lower()], index)
-                n_args += 1
+                num_args += 1
             self.jack_tokenizer.advance()
-
         self.jack_tokenizer.advance()
-        n_args += self.compile_expression_list()
+        num_args += self.compile_expression_list()
         self.jack_tokenizer.advance()
-        self.vm_writer.write_call(function_name, n_args)
+        self.vm_writer.write_call(func_name, num_args)
 
     def compile_expression_list(self) -> int:
         """
